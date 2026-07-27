@@ -4,17 +4,81 @@ An automated VM testing suite for [tetron](https://github.com/ErikAllanKincaid/t
 
 **Optional and separate from tetron on purpose**, same relationship tetron-webui and tetron-systray have to core: a genuinely separate, opt-in addon. Nothing about tetron's own behavior changes whether this exists or not. This addon tests whatever tetron binary you point it at; it does not carry a wire-compatibility relationship with one specific core version, so it versions independently rather than mirroring tetron's own minor version.
 
-## Prerequisites (not automated -- verify these yourself first)
+## Prerequisites (not automated -- set these up yourself first)
 
-This suite deliberately does no preflight/auto-install/auto-detect logic. It assumes every host named in your `hosts.conf` already has, on that host:
+This suite deliberately does no preflight/auto-install/auto-detect logic of its own -- if any of the below is missing on a declared host, tests against that host will fail with whatever error `vagrant`/`ssh` produces, and this suite will not diagnose or fix environment setup for you. Run the following once on **every host** you intend to list in `hosts.conf` (both `local` and any `ssh:` target), before running any test.
 
-- `vagrant` with the `vagrant-libvirt` plugin installed (`vagrant plugin install vagrant-libvirt`)
-- `qemu-kvm` and `libvirt-daemon-system` installed and running
-- Your user in the `libvirt`/`kvm` groups (re-login after adding)
-- `/dev/kvm` present and usable
-- For any host reached over SSH (not `local`): the SSH key already trusted, passwordless (or agent-forwarded) access working
+### 1. Confirm hardware virtualization is available
 
-If any of this is missing on a declared host, tests against that host will fail with whatever error `vagrant`/`ssh` produces -- this suite will not diagnose or fix environment setup for you.
+```bash
+grep -E '(vmx|svm)' /proc/cpuinfo >/dev/null && echo "virtualization extensions present" || echo "NOT PRESENT -- stop here, this host cannot run KVM guests"
+ls /dev/kvm 2>/dev/null && echo "/dev/kvm exists" || echo "/dev/kvm missing -- install qemu-kvm below, then re-check"
+```
+
+If `/dev/kvm` is still missing after installing `qemu-kvm` (next step), that host will fall back to slow software emulation for its VMs -- workable for these tests (they are not compute-heavy), but noticeably slower to boot.
+
+### 2. Install libvirt/KVM (Debian/Ubuntu -- adjust package manager for other distros)
+
+```bash
+sudo apt update
+sudo apt install -y qemu-kvm libvirt-daemon-system libvirt-clients bridge-utils virtinst
+
+sudo usermod -aG libvirt,kvm "$USER"
+# Log out and back in (or `newgrp libvirt`) for the group change to take effect
+# before continuing -- the next steps assume it already has.
+```
+
+### 3. Install Vagrant
+
+Distro package repos often lag behind; use HashiCorp's own apt repo instead:
+
+```bash
+wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt update && sudo apt install -y vagrant
+```
+
+### 4. Install the vagrant-libvirt plugin
+
+```bash
+vagrant plugin install vagrant-libvirt
+```
+
+### 5. Install the other controller-side tools this suite's own scripts call directly
+
+```bash
+sudo apt install -y jq openssh-client
+```
+
+`jq` is only needed on the **controller** (the machine you run `./bin/tetron-testsuite` from), not on every declared host -- `lib/common.sh`'s `json_get` pipes a VM's `tetron status --json` output back to the controller and parses it there.
+
+### 6. Sanity check everything above actually worked
+
+```bash
+virsh list --all      # should run with no error -- proves the libvirt daemon + your group membership are correct
+vagrant plugin list    # should list vagrant-libvirt
+vagrant box list       # first real run will download debian/bookworm64 automatically; fine if empty now
+```
+
+### 7. For any host reached over SSH (a `hosts.conf` entry that is not `local`)
+
+Trust must already work non-interactively -- this suite never prompts for a password or passphrase.
+
+```bash
+ssh-copy-id user@remote-host          # if you don't already have a trusted key there
+ssh -o BatchMode=yes user@remote-host true && echo "passwordless ssh works"
+```
+
+If you use an agent-forwarded or `IdentityFile`-pinned key via `~/.ssh/config` instead of a bare `user@host`, that Host alias is exactly what should go in `hosts.conf` as the SSH target (see `hosts.conf.example`) -- `run_on` shells out to plain `ssh`, so anything `ssh` itself resolves works here too.
+
+### Summary checklist
+
+- [ ] `/proc/cpuinfo` shows `vmx`/`svm`, and `/dev/kvm` exists
+- [ ] `qemu-kvm` + `libvirt-daemon-system` installed, your user in `libvirt`/`kvm` groups (re-logged-in)
+- [ ] `vagrant` installed, `vagrant-libvirt` plugin installed
+- [ ] `jq` installed on the controller
+- [ ] `virsh list --all` and `vagrant plugin list` both run clean
+- [ ] Any SSH-reached host accepts a passwordless `ssh -o BatchMode=yes <target> true`
 
 ## Design
 
