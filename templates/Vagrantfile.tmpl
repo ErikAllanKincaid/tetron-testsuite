@@ -9,6 +9,13 @@
 Vagrant.configure("2") do |config|
   config.vm.box = "__BOX__"
 
+  # Disabled: the default folder needs NFS (not set up on these hosts) and
+  # nothing in this suite relies on it -- files reach a VM via `vagrant
+  # upload` (lib/topology.sh's vm_upload), not a shared filesystem. Without
+  # this, vagrant-libvirt hangs retrying an NFS mount and the VM never
+  # finishes booting far enough for SSH to come up.
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
   (1..__NODE_COUNT__).each do |i|
     config.vm.define "node#{i}" do |node|
       node.vm.hostname = "node#{i}"

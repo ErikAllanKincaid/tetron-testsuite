@@ -41,17 +41,17 @@ main() {
 	fi
 	log_info "using physical host: $TESTSUITE_PHYSICAL_HOST"
 
-	topology_up "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" 2
+	topology_up "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" 2 || fatal "core-smoke: topology_up failed -- VMs never came up, no point running checks against them"
 	BROUGHT_UP=1
 
 	local node
 	for node in node1 node2; do
-		vm_upload "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" "$node" "$TESTSUITE_TETRON_BINARY" "/tmp/tetron"
-		vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" "$node" "sudo install -m 0755 /tmp/tetron /usr/local/bin/tetron && sudo tetron install"
+		vm_upload "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" "$node" "$TESTSUITE_TETRON_BINARY" "/tmp/tetron" || fatal "core-smoke: vm_upload failed on $node"
+		vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" "$node" "sudo install -m 0755 /tmp/tetron /usr/local/bin/tetron && sudo tetron install" || fatal "core-smoke: install failed on $node"
 	done
 
 	local create_out invite
-	create_out="$(vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo tetron create --network-name smoketest --hostname node1")"
+	create_out="$(vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo tetron create --network-name smoketest --hostname node1")" || fatal "core-smoke: 'tetron create' failed on node1"
 	invite="$(echo "$create_out" | grep -oE '[1-9A-HJ-NP-Za-km-z]{40,}' | tail -n1)"
 	if [[ -z "$invite" ]]; then
 		log_fail "core-smoke: could not find an invite code in 'tetron create' output:"
@@ -59,7 +59,7 @@ main() {
 		exit 1
 	fi
 
-	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node2 "sudo tetron join $invite --hostname node2"
+	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node2 "sudo tetron join $invite --hostname node2" || fatal "core-smoke: 'tetron join' failed on node2"
 
 	log_info "waiting for admission to propagate"
 	sleep 8

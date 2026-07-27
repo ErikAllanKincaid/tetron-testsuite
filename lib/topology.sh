@@ -7,7 +7,18 @@
 
 set -uo pipefail
 
-: "${TESTSUITE_VM_BOX:=debian/bookworm64}"
+# bento/ubuntu-24.04, not debian/bookworm64: a tetron binary built locally
+# with a plain `cargo build --release` links against whatever glibc the
+# build host ships (glibc 2.39 on this project's own Ubuntu 24.04 dev
+# machines) -- Debian 12's older glibc 2.36 then fails at runtime with
+# "GLIBC_2.39 not found," found live 2026-07-27 running this suite for the
+# first time. bento/ubuntu-24.04 matches the build host's own glibc floor
+# and is already proven to work (the manual VM lab that produced the
+# PATH-BLEED-001/TUN-CAPTURE-001 evidence used this exact box on both
+# hosts). Building with `just cross` instead (tetron's own release
+# pipeline, targets glibc 2.35 via the `cross` tool) would let an older box
+# work too, but isn't assumed here -- see the README's Prerequisites.
+: "${TESTSUITE_VM_BOX:=bento/ubuntu-24.04}"
 : "${TESTSUITE_VM_MEM_MB:=512}"
 : "${TESTSUITE_VM_CPUS:=1}"
 

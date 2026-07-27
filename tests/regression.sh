@@ -56,12 +56,12 @@ main() {
 	fi
 	log_info "using physical host: $TESTSUITE_PHYSICAL_HOST"
 
-	topology_up "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" 1
+	topology_up "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" 1 || fatal "regression: topology_up failed -- VM never came up, no point running checks against it"
 	BROUGHT_UP=1
 
-	vm_upload "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "$TESTSUITE_TETRON_BINARY" "/tmp/tetron"
-	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo install -m 0755 /tmp/tetron /usr/local/bin/tetron && sudo tetron install"
-	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo tetron create --network-name regfirst --hostname node1"
+	vm_upload "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "$TESTSUITE_TETRON_BINARY" "/tmp/tetron" || fatal "regression: vm_upload failed"
+	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo install -m 0755 /tmp/tetron /usr/local/bin/tetron && sudo tetron install" || fatal "regression: install failed on node1"
+	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo tetron create --network-name regfirst --hostname node1" || fatal "regression: initial 'tetron create' failed on node1"
 
 	local rc=0
 
@@ -72,8 +72,13 @@ main() {
 }
 
 check_selfcapture_rule() {
-	local rule_list
+	local rule_list vm_rc
 	rule_list="$(vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "ip rule list")"
+	vm_rc=$?
+	if [[ $vm_rc -ne 0 ]]; then
+		log_fail "SELFCAPTURE-ROUTE-001: could not reach node1 to run 'ip rule list' (exit $vm_rc) -- infrastructure failure, not a real check result"
+		return 1
+	fi
 	if echo "$rule_list" | grep -q "lookup 52369" && echo "$rule_list" | grep "lookup 52369" | grep -q "sport 43737"; then
 		log_pass "SELFCAPTURE-ROUTE-001: ip rule for iroh's outbound UDP (sport 43737, table 52369) present"
 		return 0
@@ -84,24 +89,32 @@ check_selfcapture_rule() {
 }
 
 check_subnet_collision() {
-	local out status_ok=0
+	local out rc status_ok=0
 
 	out="$(vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo tetron create --network-name regsecond --hostname node1 --subnet 10.88.0.0/24" 2>&1)"
-	if echo "$out" | grep -q "overlaps a network this node already has"; then
+	rc=$?
+	# Refusal is expected to be a non-zero exit AND the documented message --
+	# checking only exit code would also "pass" on an unrelated infra
+	# failure (VM unreachable, ssh/vagrant error), and checking only the
+	# message text (the original bug here) would "pass" on any output that
+	# doesn't happen to contain the word "error", which a total connection
+	# failure's own error text often doesn't.
+	if [[ $rc -ne 0 ]] && echo "$out" | grep -q "overlaps a network this node already has"; then
 		log_pass "SUBNET-COLLISION-001: overlapping --subnet refused without --force"
 	else
-		log_fail "SUBNET-COLLISION-001: expected refusal ('overlaps a network this node already has'), got:"
+		log_fail "SUBNET-COLLISION-001: expected refusal (non-zero exit + 'overlaps a network this node already has'), got exit $rc:"
 		echo "$out" >&2
 		status_ok=1
 	fi
 
 	out="$(vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo tetron create --network-name regsecond --hostname node1 --subnet 10.88.0.0/24 --force" 2>&1)"
-	if echo "$out" | grep -qi "error"; then
-		log_fail "SUBNET-COLLISION-001: expected --force to succeed despite the overlap, got:"
+	rc=$?
+	if [[ $rc -eq 0 ]]; then
+		log_pass "SUBNET-COLLISION-001: --force overrides the overlap refusal"
+	else
+		log_fail "SUBNET-COLLISION-001: expected --force to succeed despite the overlap, got exit $rc:"
 		echo "$out" >&2
 		status_ok=1
-	else
-		log_pass "SUBNET-COLLISION-001: --force overrides the overlap refusal"
 	fi
 
 	return $status_ok
