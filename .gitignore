@@ -1,0 +1,5 @@
+/DO-NOT-COMMIT/
+.vagrant/
+*.box
+*.log
+hosts.conf

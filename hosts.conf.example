@@ -1,0 +1,21 @@
+# tetron-testsuite host inventory.
+#
+# Copy this file to hosts.conf (gitignored -- your real fleet is your own
+# business) and edit. One host per line:
+#
+#   <name>  <target>
+#
+# <name> is a label used only within this suite (Vagrant machine naming,
+# log lines) -- it does not need to match the real hostname.
+#
+# <target> is either the literal word "local" (run vagrant/libvirt directly
+# on this machine) or an SSH target (user@host, anything `ssh` itself
+# accepts, including a Host alias from your own ~/.ssh/config). A remote
+# target is treated no differently whether it is on the same LAN or reached
+# over the open internet -- this suite assumes connectivity already works
+# (SSH key already trusted) and does not attempt to establish or verify it.
+#
+# Lines starting with # are comments. Blank lines are ignored.
+
+host-a  local
+#host-b ssh:user@remote-build-host.example.com

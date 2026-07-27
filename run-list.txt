@@ -1,0 +1,16 @@
+# tetron-testsuite run list.
+#
+# This file IS the master test catalog -- every known test is listed here,
+# one line per test id. Uncomment a line to include it in the next
+# ./bin/tetron-testsuite run (no arguments). Comments/order/toggling is a
+# purely manual edit; there is no helper script to add/remove entries.
+#
+# Each id must match a file at tests/<id>.sh.
+
+regression
+#core-smoke
+#rsync-transfer
+#scp-transfer
+#http-reachability
+#ssh-pairwise
+#ssh-jump-host-cross-network

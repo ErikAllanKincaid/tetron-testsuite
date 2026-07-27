@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# tetron-testsuite runner.
+#
+# Usage:
+#   ./bin/tetron-testsuite              # run everything uncommented in run-list.txt
+#   ./bin/tetron-testsuite <id> [id...] # run specific test(s) by id, ignoring run-list.txt
+#
+# Each selected test is executed as its own subprocess (tests/<id>.sh) --
+# it owns its own topology lifecycle (bring-up, teardown) via lib/topology.sh.
+# This runner only selects tests, executes them, and reports results; exit
+# code 77 from a test is treated as SKIP (not implemented / precondition
+# not met), not a failure.
+
+set -uo pipefail
+
+readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly RUN_LIST="$ROOT/run-list.txt"
+readonly TESTS_DIR="$ROOT/tests"
+readonly SKIP_CODE=77
+
+source "$ROOT/lib/common.sh"
+
+select_from_run_list() {
+	[[ -f "$RUN_LIST" ]] || fatal "run-list.txt not found at $RUN_LIST"
+	grep -vE '^\s*(#|$)' "$RUN_LIST" | awk '{print $1}'
+}
+
+test_metadata() {
+	local file="$1"
+	local key="$2"
+	grep -E "^# meta:${key} " "$file" | head -n1 | sed -E "s/^# meta:${key} //"
+}
+
+run_one() {
+	local id="$1"
+	local file="$TESTS_DIR/$id.sh"
+	if [[ ! -f "$file" ]]; then
+		log_fail "$id: no such test file (expected $file)"
+		echo "FAIL"
+		return
+	fi
+
+	local description
+	description="$(test_metadata "$file" description)"
+	log_info "=== $id: ${description:-<no description>} ==="
+
+	bash "$file"
+	local rc=$?
+	if [[ $rc -eq 0 ]]; then
+		log_pass "$id"
+		echo "PASS"
+	elif [[ $rc -eq $SKIP_CODE ]]; then
+		log_warn "$id: SKIPPED"
+		echo "SKIP"
+	else
+		log_fail "$id (exit $rc)"
+		echo "FAIL"
+	fi
+}
+
+main() {
+	local ids=()
+	if [[ $# -gt 0 ]]; then
+		ids=("$@")
+	else
+		mapfile -t ids < <(select_from_run_list)
+	fi
+
+	[[ ${#ids[@]} -gt 0 ]] || fatal "no tests selected -- uncomment at least one line in run-list.txt, or pass test ids explicitly"
+
+	declare -A results=()
+	local id result
+	for id in "${ids[@]}"; do
+		result="$(run_one "$id" | tail -n1)"
+		results["$id"]="$result"
+	done
+
+	echo
+	echo "=== summary ==="
+	local pass=0 fail=0 skip=0
+	for id in "${ids[@]}"; do
+		printf '%-40s %s\n' "$id" "${results[$id]}"
+		case "${results[$id]}" in
+		PASS) ((pass++)) ;;
+		FAIL) ((fail++)) ;;
+		SKIP) ((skip++)) ;;
+		esac
+	done
+	echo "$pass passed, $fail failed, $skip skipped"
+
+	[[ $fail -eq 0 ]]
+}
+
+main "$@"
