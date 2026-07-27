@@ -133,7 +133,7 @@ cp hosts.conf.example hosts.conf   # edit for your fleet
 6. `ssh-pairwise` -- SSH between every node in the topology.
 7. `ssh-jump-host-cross-network` -- validates `MULTISEG-003`'s documented jump-hosting workaround across two tetron networks with no direct route between them.
 
-Only `regression` and `core-smoke` are fully implemented as of this writing; the rest are stubs with the same metadata-header convention, ready to fill in. See each file's own header for status.
+All seven are implemented and have each passed at least one full live run against real VMs on real hardware (`aorus`) as of this writing -- not just syntax-checked. `rsync-transfer`, `scp-transfer`, and `ssh-pairwise`/`ssh-jump-host-cross-network` additionally use `lib/topology.sh`'s `vm_setup_peer_ssh` helper -- it installs one throwaway shared keypair across the named VMs so they can `ssh`/`scp`/`rsync` each other directly over their mesh IPs (`vm_run`/`vm_upload` alone only ever reach controller -> physical host -> one VM, never VM -> VM). `wait_for_peer_port` (also `lib/topology.sh`) retries a plain TCP connect before any test attempts a real peer-to-peer connection -- a fixed sleep after "join" was found live to not always be enough time for the actual data-plane path between two fresh peers to finish establishing, even once admission itself has propagated. A single live run is evidence the happy path works, not a guarantee against flakiness on a different host or a slower boot -- re-run before trusting a specific result under time pressure.
 
 A second-pass backlog (invite/admission lifecycle, membership mutations, config-knob round-trips, resilience, IPv6, rate-limit abuse testing) exists but is explicitly deferred past v1.
 

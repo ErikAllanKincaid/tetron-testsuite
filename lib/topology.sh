@@ -131,3 +131,63 @@ vm_upload() {
 	fi
 	run_on "$physical_host" "cd '$remote_dir' && vagrant upload '$local_path' '$remote_path' $node_name"
 }
+
+# vm_setup_peer_ssh <physical-host> <run-id> <node-name...>
+# Generates one throwaway ed25519 keypair (once per run, cached under
+# DO-NOT-COMMIT/topology-work/<run-id>/sshkey/) and installs it as both the
+# private key and an additional authorized_keys entry on every named node
+# -- so any named node can ssh/scp/rsync into any other named node as the
+# `vagrant` user, over their mesh IPs, using the same shared key at every
+# hop. Needed by any test that has one VM initiate a connection to
+# another VM rather than just being reached by the controller
+# (vm_run/vm_upload only ever go controller -> physical host -> one VM,
+# never VM -> VM).
+vm_setup_peer_ssh() {
+	local physical_host="$1" run_id="$2"
+	shift 2
+	local nodes=("$@")
+
+	local work_dir key_dir
+	work_dir="$(topology_workdir "$run_id")"
+	key_dir="$work_dir/sshkey"
+	mkdir -p "$key_dir"
+
+	if [[ ! -f "$key_dir/id_ed25519" ]]; then
+		ssh-keygen -q -t ed25519 -N "" -f "$key_dir/id_ed25519" -C "tetron-testsuite-$run_id" || return 1
+	fi
+	local pubkey
+	pubkey="$(cat "$key_dir/id_ed25519.pub")"
+
+	local node
+	for node in "${nodes[@]}"; do
+		vm_upload "$physical_host" "$run_id" "$node" "$key_dir/id_ed25519" "/tmp/id_ed25519_shared" || return 1
+		vm_run "$physical_host" "$run_id" "$node" \
+			"mkdir -p ~/.ssh && chmod 700 ~/.ssh && mv /tmp/id_ed25519_shared ~/.ssh/id_ed25519_shared && chmod 600 ~/.ssh/id_ed25519_shared && echo '$pubkey' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" || return 1
+	done
+}
+
+# wait_for_peer_port <physical-host> <run-id> <from-node> <ip> <port> [<timeout-seconds>=30]
+# Retries a plain TCP connect from inside <from-node> to <ip>:<port> (via
+# bash's own /dev/tcp, no extra tools needed) every 2s until it succeeds or
+# <timeout-seconds> elapses. Found necessary live 2026-07-27: a fixed sleep
+# after "join" succeeds is long enough for admission/roster propagation
+# (what the tests already sleep for before querying status), but not
+# reliably long enough for the actual data-plane path between two freshly
+# joined peers to finish establishing (NAT traversal / relay fallback can
+# take a few extra seconds) -- a `scp`/`ssh` attempt made right at that
+# boundary saw a real "Connection timed out," not a logic bug. Any test
+# that makes a real peer-to-peer connection (not just a status query)
+# should wait_for_peer_port on the target's port before attempting it.
+wait_for_peer_port() {
+	local physical_host="$1" run_id="$2" from_node="$3" ip="$4" port="$5"
+	local timeout_s="${6:-30}"
+	local waited=0
+	while ((waited < timeout_s)); do
+		if vm_run "$physical_host" "$run_id" "$from_node" "timeout 3 bash -c 'echo >/dev/tcp/$ip/$port'" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 2
+		waited=$((waited + 2))
+	done
+	return 1
+}

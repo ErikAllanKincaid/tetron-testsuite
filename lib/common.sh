@@ -9,6 +9,14 @@ set -uo pipefail
 # reporting a false pass or an indistinguishable generic failure.
 readonly TESTSUITE_SKIP_CODE=77
 
+# Options for any ssh/scp/rsync hop between two VMs (not the physical-host
+# hop, which already goes through vagrant's own ssh-config). Each VM is
+# freshly created every run, so its host key is new and unknown every time
+# -- accepting it unconditionally is correct here, not a security
+# shortcut, since there is no prior legitimate host identity to compare
+# against.
+readonly TESTSUITE_PEER_SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+
 declare -gA TESTSUITE_HOSTS=()
 
 log_info()  { printf '[info]  %s\n' "$*" >&2; }
