@@ -10,12 +10,20 @@
 # This runner only selects tests, executes them, and reports results; exit
 # code 77 from a test is treated as SKIP (not implemented / precondition
 # not met), not a failure.
+#
+# Logs from each test (stdout + stderr) are captured to TESTSUITE_LOG_DIR
+# (default: DO-NOT-COMMIT/runs/). Set the env var to redirect logs elsewhere.
+# After each test a structured report is printed showing VM config,
+# assertion pass/fail counts, and the log path.
 
 set -uo pipefail
 
 readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly RUN_LIST="$ROOT/run-list.txt"
 readonly TESTS_DIR="$ROOT/tests"
+: "${TESTSUITE_LOG_DIR:=$ROOT/test-logs}"
+readonly LOG_DIR="${TESTSUITE_LOG_DIR}"
+readonly RUN_TS="$(date +%Y%m%d-%H%M%S)"
 readonly SKIP_CODE=77
 
 source "$ROOT/lib/common.sh"
@@ -44,8 +52,13 @@ run_one() {
 	description="$(test_metadata "$file" description)"
 	log_info "=== $id: ${description:-<no description>} ==="
 
-	bash "$file"
+	mkdir -p "$LOG_DIR"
+	local logfile="$LOG_DIR/$id-$RUN_TS.log"
+	: > "$logfile"
+
+	bash "$file" 2> >(tee -a "$logfile" >&2) 1> >(tee -a "$logfile")
 	local rc=$?
+
 	if [[ $rc -eq 0 ]]; then
 		log_pass "$id"
 		echo "PASS"
@@ -58,7 +71,51 @@ run_one() {
 	fi
 }
 
+print_report() {
+	local id="$1"
+	local logfile="$2"
+	local result="$3"
+	local elapsed="$4"
+
+	[[ -f "$logfile" ]] || return
+
+	# Parse host, VM count, and box from log info lines
+	local host_line host vm_line vm_count box
+	host_line="$(grep 'using physical host:' "$logfile" | head -n1)" || host_line=""
+	host="${host_line##* }"
+	vm_line="$(grep 'bringing up' "$logfile" | head -n1)" || vm_line=""
+	vm_count="$(echo "$vm_line" | sed -n 's/.*bringing up \([0-9]*\) node(s).*/\1/p')"
+	box="$(echo "$vm_line" | sed -n 's/.*(\([^)]*\)) (\/tmp.*)/\1/p')"
+
+	# Count pass/fail lines
+	local pass_count=0 fail_count=0
+	pass_count="$(grep -cE '^\[pass\]' "$logfile" 2>/dev/null || true)"
+	fail_count="$(grep -cE '^\[fail\]' "$logfile" 2>/dev/null || true)"
+
+	# Print report
+	printf '\n=== %s (%s, %ss) ===\n' "$id" "$result" "$elapsed"
+	if [[ -n "$host" ]]; then
+		printf '  host: %s  VMs: %s (%s)\n' "$host" "${vm_count:-?}" "${box:-?}"
+	fi
+	printf '  assertions: %s pass, %s fail\n' "$pass_count" "$fail_count"
+
+	# Indented pass/fail details
+	if [[ $pass_count -gt 0 ]]; then
+		grep -E '^\[pass\]' "$logfile" | while read -r line; do
+			printf '  PASS  %s\n' "${line#*\]  }"
+		done
+	fi
+	if [[ $fail_count -gt 0 ]]; then
+		grep -E '^\[fail\]' "$logfile" | while read -r line; do
+			printf '  FAIL  %s\n' "${line#*\] }"
+		done
+	fi
+
+	printf '  log: %s\n' "$logfile"
+}
+
 main() {
+	declare -gA ELAPSED=()
 	local ids=()
 	if [[ $# -gt 0 ]]; then
 		ids=("$@")
@@ -71,22 +128,29 @@ main() {
 	declare -A results=()
 	local id result
 	for id in "${ids[@]}"; do
+		local start_ts=$SECONDS
 		result="$(run_one "$id" | tail -n1)"
 		results["$id"]="$result"
+		ELAPSED["$id"]=$((SECONDS - start_ts))
+
+		local logfile="$LOG_DIR/$id-$RUN_TS.log"
+		print_report "$id" "$logfile" "$result" "${ELAPSED[$id]}"
 	done
 
 	echo
 	echo "=== summary ==="
-	local pass=0 fail=0 skip=0
+	local pass=0 fail=0 skip=0 total_elapsed=0
 	for id in "${ids[@]}"; do
-		printf '%-40s %s\n' "$id" "${results[$id]}"
+		printf '%-40s %s  %ss\n' "$id" "${results[$id]}" "${ELAPSED[$id]:-0}"
 		case "${results[$id]}" in
 		PASS) ((pass++)) ;;
 		FAIL) ((fail++)) ;;
 		SKIP) ((skip++)) ;;
 		esac
+		total_elapsed=$((total_elapsed + ${ELAPSED[$id]:-0}))
 	done
-	echo "$pass passed, $fail failed, $skip skipped"
+	echo "$pass passed, $fail failed, $skip skipped  (total ${total_elapsed}s)"
+	echo "logs: $LOG_DIR"
 
 	[[ $fail -eq 0 ]]
 }

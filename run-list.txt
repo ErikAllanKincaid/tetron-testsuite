@@ -8,9 +8,9 @@
 # Each id must match a file at tests/<id>.sh.
 
 regression
-#core-smoke
+core-smoke
 #rsync-transfer
 #scp-transfer
 #http-reachability
-#ssh-pairwise
+ssh-pairwise
 #ssh-jump-host-cross-network

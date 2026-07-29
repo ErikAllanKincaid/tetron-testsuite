@@ -81,7 +81,7 @@ topology_up() {
 		scp -o BatchMode=yes "$work_dir/Vagrantfile" "${target#ssh:}:$remote_dir/Vagrantfile" >&2
 	fi
 
-	log_info "bringing up $node_count node(s) on '$physical_host' ($remote_dir)"
+	log_info "bringing up $node_count node(s) on '$physical_host' ($TESTSUITE_VM_BOX, ${TESTSUITE_VM_MEM_MB}MB, ${TESTSUITE_VM_CPUS}vCPU) ($remote_dir)"
 	run_on "$physical_host" "cd '$remote_dir' && vagrant up --provider=libvirt"
 }
 

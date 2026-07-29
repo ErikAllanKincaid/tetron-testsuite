@@ -1,8 +1,21 @@
 # tetron-testsuite
 
-An automated VM testing suite for [tetron](https://github.com/ErikAllanKincaid/tetron), a P2P mesh VPN. It provisions disposable VM topologies, installs a tetron build on each, drives tetron entirely through its own CLI/`--json` output (the same way manual live-testing already worked), and asserts on real network behavior.
+An automated VM testing suite for [tetron](https://github.com/ErikAllanKincaid/tetron), a P2P mesh VPN. It provisions disposable VM topologies, installs a tetron build on each, drives tetron entirely through its own CLI/`--json` output -- a black-box approach, exercising tetron the same way a person testing it by hand would, not by reaching into its internals -- and asserts on real network behavior.
 
 **Optional and separate from tetron on purpose**, same relationship tetron-webui and tetron-systray have to core: a genuinely separate, opt-in addon. Nothing about tetron's own behavior changes whether this exists or not. This addon tests whatever tetron binary you point it at; it does not carry a wire-compatibility relationship with one specific core version, so it versions independently rather than mirroring tetron's own minor version.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["hosts.conf<br/>+ run-list.txt"] --> B["bin/tetron-testsuite<br/>(runner)"]
+    B --> C["tests/&lt;id&gt;.sh"]
+    C --> D["lib/topology.sh<br/>renders a Vagrantfile,<br/>brings up N VMs / M networks"]
+    D --> E["tetron installed on each VM,<br/>driven via its own CLI / --json<br/>(black-box, no internals touched)"]
+    E --> F["test body asserts<br/>on real network behavior"]
+    F --> G["pass / fail / skip"]
+    G --> B
+```
 
 ## Prerequisites (not automated -- set these up yourself first)
 
@@ -57,7 +70,7 @@ sudo apt install -y jq openssh-client
 ```bash
 virsh list --all      # should run with no error -- proves the libvirt daemon + your group membership are correct
 vagrant plugin list    # should list vagrant-libvirt
-vagrant box list       # first real run will download debian/bookworm64 automatically; fine if empty now
+vagrant box list       # first real run will download bento/ubuntu-24.04 automatically; fine if empty now
 ```
 
 ### 7. For any host reached over SSH (a `hosts.conf` entry that is not `local`)
@@ -82,7 +95,7 @@ If you use an agent-forwarded or `IdentityFile`-pinned key via `~/.ssh/config` i
 
 ## Design
 
-- **Bash + Python, not Rust.** This addon does not link `tetron-proto`; it drives tetron black-box, so there is no need for the Cargo toolchain tetron-webui/tetron-systray require.
+- **Bash + Python.** This addon does not link `tetron-proto`; it drives tetron black-box, so there is no need for the Cargo toolchain tetron-webui/tetron-systray require.
 - **Host inventory is fully generic.** `hosts.conf` lists hosts as `local` or an SSH target. The code never distinguishes "same LAN" from "different network reached over the open internet" -- both are just an inventory entry with a reachable target. No hostnames are hardcoded anywhere in the scripts.
 - **No named tiers.** There is no "Basic/Medium/Advanced" concept. Every test is a flat, independently selectable unit, including regression -- nothing is special-cased to "always run."
 - **`run-list.txt` is the master catalog, not a separate list plus a curated selection.** It ships with every known test listed as one line each. All are commented out except the regression test, which stays active by default. Editing this file to add/remove entries from a run is a purely manual, direct edit for v1 -- there is no helper script.
@@ -99,29 +112,95 @@ lib/common.sh          -- logging, hosts.conf parsing, local/ssh command wrapper
 lib/topology.sh         -- N-node/M-network VM topology generation (vagrant-libvirt) and lifecycle
 templates/Vagrantfile.tmpl -- template rendered by lib/topology.sh
 tests/*.sh              -- one file per test, metadata header + body
+test-logs/              -- per-test log files (stdout + stderr), gitignored, created at first run
 ```
-
-## Test file convention
-
-Every file in `tests/` opens with a metadata header, parsed by the runner as `# meta:<key> <value>` lines:
-
-```bash
-#!/usr/bin/env bash
-# meta:id core-smoke
-# meta:description Core smoke test: create -> join -> status shows peer -> leave -> gone
-# meta:nodes 2
-# meta:networks 1
-```
-
-`nodes`/`networks` tell the runner what topology to bring up via `lib/topology.sh` before running the test body. The body is free to use `lib/common.sh`'s helpers to run `tetron` commands on any declared node and assert on the result. A test exits `0` for pass, non-zero for fail; `tests/` scripts not yet implemented exit with a distinct SKIP code and print why, rather than silently reporting a false pass.
 
 ## Running
 
 ```bash
 cp hosts.conf.example hosts.conf   # edit for your fleet
-./bin/tetron-testsuite              # runs everything uncommented in run-list.txt
-./bin/tetron-testsuite core-smoke   # runs one test by id, regardless of run-list.txt
 ```
+
+**A pre-built `tetron` binary is required and is not fetched or built for you.** Every test installs one onto its VMs, and defaults to looking for it at `../tetron/target/release/tetron` -- a sibling checkout of the `tetron` repo, built with `cargo build --release` there. Without it, every test SKIPs rather than failing, since there is nothing to install. Point at a different binary (a debug build, a cross-compiled one, a different checkout location) with `TESTSUITE_TETRON_BINARY=/path/to/tetron`.
+
+All environment variables, each with a working default -- override only if you need to:
+
+| Variable | Default | What it controls |
+|---|---|---|
+| `TESTSUITE_TETRON_BINARY` | `../tetron/target/release/tetron` | Path to the tetron binary installed onto every VM |
+| `TESTSUITE_PHYSICAL_HOST` | The first `hosts.conf` entry, alphabetically | Which declared host a test's VMs are provisioned on |
+| `TESTSUITE_VM_BOX` | `bento/ubuntu-24.04` | **Controls the VM operating system.** This is a Vagrant box name -- each box ships a specific OS. Change it to test against a different distro (e.g. `generic/rocky9` for RHEL 9, `generic/opensuse15` for openSUSE). The box's glibc must be new enough for a locally-built tetron binary -- see Prerequisites step 6. Browse available boxes with `vagrant box search` or at <https://app.vagrantup.com/boxes/search>. |
+| `TESTSUITE_VM_MEM_MB` | `512` | RAM per VM (MB) |
+| `TESTSUITE_VM_CPUS` | `1` | vCPUs per VM |
+| `TESTSUITE_LOG_DIR` | `./test-logs/` | Where per-test log files (stdout + stderr captured during the run) are written |
+
+```bash
+# Run with defaults
+./bin/tetron-testsuite
+
+# Override VM OS to RHEL 9
+TESTSUITE_VM_BOX=generic/rocky9 ./bin/tetron-testsuite core-smoke
+
+# Override log directory for one run
+TESTSUITE_LOG_DIR=/tmp/test-logs ./bin/tetron-testsuite regression
+```
+
+## Output and logs
+
+Each test's stdout and stderr are captured to a timestamped log file at
+`TESTSUITE_LOG_DIR` (default `./test-logs/`). Log files are named
+`<test-id>-<YYYYMMDD-HHMMSS>.log` and persist after the run for post-mortem
+analysis -- the same data you saw scroll by live, but preserved.
+
+After each test completes, the runner prints a structured report with VM
+details, assertion results, timing, and the log file path:
+
+```
+=== regression (PASS, 35s) ===
+  host: aorus  VMs: 1 (bento/ubuntu-24.04, 512MB, 1vCPU)
+  assertions: 3 pass, 0 fail
+  PASS  SELFCAPTURE-ROUTE-001: ip rule for iroh's outbound UDP (sport 43737, table 52369) present
+  PASS  SUBNET-COLLISION-001: overlapping --subnet refused without --force
+  PASS  SUBNET-COLLISION-001: --force overrides the overlap refusal
+  log: /home/user/tetron-testsuite/test-logs/regression-20260728-225149.log
+
+=== core-smoke (PASS, 57s) ===
+  host: aorus  VMs: 2 (bento/ubuntu-24.04, 512MB, 1vCPU)
+  assertions: 2 pass, 0 fail
+  PASS  core-smoke: node1 sees node2 as a member after join
+  PASS  core-smoke: node1 sees node2 gone after leave
+  log: /home/user/tetron-testsuite/test-logs/core-smoke-20260728-225149.log
+
+=== summary ===
+regression                               PASS  35s
+core-smoke                               PASS  57s
+2 passed, 0 failed, 0 skipped  (total 133s)
+logs: /home/user/tetron-testsuite/test-logs/
+```
+
+The raw log file contains the full detail not shown in the report -- vagrant
+output, VM command output, tetron progress messages, and any error context
+from failed assertions.
+
+## Adding a new test
+
+1. Create `tests/<id>.sh` -- the filename minus `.sh` is the id everything else (the runner, `run-list.txt`) refers to it by.
+2. Open with a metadata header. Only `description` is actually read (by the runner, for its log line) -- `nodes`/`networks` are for a human skimming the file, not enforced by anything; the real topology size comes from the `topology_up` call your own test body makes in step 3.
+   ```bash
+   #!/usr/bin/env bash
+   # meta:id my-new-test
+   # meta:description One sentence: what this proves
+   # meta:nodes 2
+   # meta:networks 1
+   ```
+3. `source lib/common.sh` and `source lib/topology.sh`, then explicitly call `topology_up "$host" "$run_id" <node-count>` -- that real call is what brings the VMs up, not the header. Wrap teardown in `trap cleanup EXIT` calling `topology_down`, so a failed test doesn't leak a VM. Copy this whole skeleton (including the SKIP-if-no-binary check) straight from an existing test, e.g. `tests/core-smoke.sh`, rather than writing it from scratch.
+4. Drive tetron through `lib/common.sh`/`lib/topology.sh`'s helpers -- `vm_upload`/`vm_run` reach a VM via the physical host (controller -> host -> VM); `vm_setup_peer_ssh` additionally enables direct VM-to-VM `ssh`/`scp`/`rsync` if the test needs that; `json_get` parses a `tetron status --json` blob -- and assert on the result.
+5. Exit `0` for pass, `$TESTSUITE_SKIP_CODE` (77) for skip (a missing prerequisite this specific test needs), anything else for fail.
+
+## Including a test in a run
+
+- **Add it to the routine catalog:** uncomment (or add) its id as its own line in `run-list.txt` -- `./bin/tetron-testsuite` with no arguments runs every uncommented line. Each id must match a file at `tests/<id>.sh`.
+- **Or run it once without touching `run-list.txt` at all:** `./bin/tetron-testsuite <id>` runs that one test by id directly, regardless of the catalog -- useful while still writing or debugging a new test, before deciding whether it belongs in the regular run list.
 
 ## v1 test list
 
