@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # meta:id veilid-smoke
-# meta:description Live connectivity check for the experimental Veilid transport (VEILID-001..004): create --veilid -> restart (self-heals the coordinator's own roster entry, VEILID-004) -> join --veilid -> restart (member self-heals via reconnect MeshHello, VEILID-003) -> status shows conn_type Veilid on both sides.
+# meta:description Live connectivity check for the experimental Veilid transport (VEILID-001..006): create --veilid -> restart -> join --veilid -> restart -> asserts a Veilid path candidate with real traffic appears in tetron status --json's paths[], on both sides.
 # meta:nodes 2
 # meta:networks 1
 #
@@ -11,9 +11,18 @@
 # Both nodes' embedded Veilid transport only starts on the *second* daemon
 # boot for a given node (the shared endpoint's custom transports are fixed
 # at process startup, before --veilid has even reached config on the first
-# create/join against an already-running daemon -- see spec/core.py's
-# VeilidCoordinatorSelfEntryHeal, VEILID-004). Each `tetron restart` below
-# is not incidental cleanup, it is the step that actually starts Veilid.
+# create/join against an already-running daemon). Each `tetron restart`
+# below is not incidental cleanup, it is the step that actually starts
+# Veilid.
+#
+# Asserts a Veilid PATH CANDIDATE with real activity appears in paths[],
+# not that conn_type itself becomes "Veilid": these two VMs share a LAN,
+# so Direct is always reachable too, and tetron's own choose_path_index
+# (daemon/mesh/select.rs) deliberately ranks Direct > Relay > Tor > Veilid
+# -- Direct will always win the SELECTED slot here, correctly, by design.
+# A dedicated Veilid-only topology (isolating direct+relay so Veilid is
+# the only viable path) is what it would take to see conn_type itself
+# become "Veilid" live; not attempted by this test.
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -100,32 +109,40 @@ main() {
 	log_info "waiting up to ${TESTSUITE_VEILID_SETTLE_SECS}s for node2's Veilid attach + reconnect + admission propagation"
 	sleep "$TESTSUITE_VEILID_SETTLE_SECS"
 
-	local status_json conn_type peer_hostname
+	# check_veilid_path_activity <node-label> <status-json> -- looks for a
+	# Veilid entry in paths[] with real received activity (has_activity),
+	# not just an attempted-but-unvalidated candidate. This is the actual
+	# end-to-end proof the mechanism works: real traffic reached a peer
+	# over the custom transport. Whether it's the SELECTED conn_type is a
+	# separate question this same-LAN topology can't test -- see the file
+	# header comment.
+	check_veilid_path_activity() {
+		local label="$1" status_json="$2"
+		local peer_hostname conn_type has_veilid_activity
+		peer_hostname="$(json_get '.networks[0].peers[0].hostname // empty' "$status_json")"
+		conn_type="$(json_get '.networks[0].peers[0].connection.conn_type // "None"' "$status_json")"
+		has_veilid_activity="$(json_get '[.networks[0].peers[0].connection.paths[]? // empty | select(.conn_type == "Veilid" and .has_activity == true)] | length > 0' "$status_json")"
+		log_info "$label sees peer '$peer_hostname', selected conn_type=$conn_type, veilid path with activity=$has_veilid_activity"
+		if [[ "$peer_hostname" != "node1" && "$peer_hostname" != "node2" ]]; then
+			log_fail "veilid-smoke: $label does not see the other node as a member at all"
+			echo "$status_json" >&2
+			return 1
+		fi
+		if [[ "$has_veilid_activity" != "true" ]]; then
+			log_fail "veilid-smoke: $label has no Veilid path candidate with real activity -- roster/dial-path wiring did not actually route traffic through the custom transport"
+			echo "$status_json" >&2
+			return 1
+		fi
+		log_pass "veilid-smoke: $label carried real traffic over a Veilid path candidate"
+		return 0
+	}
+
+	local status_json
 	status_json="$(vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "tetron status --json")"
-	conn_type="$(json_get '.networks[0].peers[0].connection.conn_type // "None"' "$status_json")"
-	peer_hostname="$(json_get '.networks[0].peers[0].hostname // empty' "$status_json")"
-	log_info "node1 sees peer '$peer_hostname' via conn_type=$conn_type"
-	if [[ "$peer_hostname" != "node2" ]]; then
-		log_fail "veilid-smoke: node1 does not see node2 as a member at all"
-		echo "$status_json" >&2
-		exit 1
-	fi
-	if [[ "$conn_type" != "Veilid" ]]; then
-		log_fail "veilid-smoke: node1<->node2 connected, but not over Veilid (conn_type=$conn_type) -- roster/dial-path wiring did not actually route traffic through the custom transport"
-		echo "$status_json" >&2
-		exit 1
-	fi
-	log_pass "veilid-smoke: node1 reaches node2 with conn_type=Veilid"
+	check_veilid_path_activity "node1" "$status_json" || exit 1
 
 	status_json="$(vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node2 "tetron status --json")"
-	conn_type="$(json_get '.networks[0].peers[0].connection.conn_type // "None"' "$status_json")"
-	log_info "node2 sees its peer via conn_type=$conn_type"
-	if [[ "$conn_type" != "Veilid" ]]; then
-		log_fail "veilid-smoke: node2->node1 direction not over Veilid (conn_type=$conn_type)"
-		echo "$status_json" >&2
-		exit 1
-	fi
-	log_pass "veilid-smoke: node2 reaches node1 with conn_type=Veilid (bidirectional confirmed)"
+	check_veilid_path_activity "node2" "$status_json" || exit 1
 }
 
 main
