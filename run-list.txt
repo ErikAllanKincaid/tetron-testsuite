@@ -9,6 +9,7 @@
 
 regression
 core-smoke
+#install-path-override
 #rsync-transfer
 #scp-transfer
 #http-reachability
@@ -16,3 +17,5 @@ ssh-pairwise
 #ssh-jump-host-cross-network
 idle-connection-stability
 idle-connection-stability-relay
+coordinator-reconnect
+oversized-udp-fragmentation
