@@ -111,6 +111,7 @@ bin/tetron-testsuite   -- the runner: reads run-list.txt, executes each enabled 
 lib/common.sh          -- logging, hosts.conf parsing, local/ssh command wrapper, tetron JSON helpers
 lib/topology.sh         -- N-node/M-network VM topology generation (vagrant-libvirt) and lifecycle
 templates/Vagrantfile.tmpl -- template rendered by lib/topology.sh
+assets/                 -- helper programs a test uploads into a VM (vm_upload) and runs there
 tests/*.sh              -- one file per test, metadata header + body
 test-logs/              -- per-test log files (stdout + stderr), gitignored, created at first run
 ```

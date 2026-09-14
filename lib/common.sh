@@ -92,3 +92,20 @@ json_get() {
 	local json="$2"
 	echo "$json" | jq -r "$filter"
 }
+
+# log_match_count <gzip-file> <grep-pattern>
+# Counts lines matching <grep-pattern> across a gzip file's decompressed
+# content, printing one integer. Use this instead of `zgrep -c` whenever
+# the gzip file may have been built from `gzip -c file1 file2 ...` (a
+# multi-file glob, e.g. rotated daily logs matching tetron.log.*) --
+# zgrep -c reports a count PER underlying gzip member in that case (e.g.
+# "0\n0" for two files with no matches), breaking any numeric comparison
+# on the result. zcat decompresses a concatenated multi-member stream as
+# one continuous byte stream, so grep -c over that gives one real total.
+# Found live 2026-08-11 building tetron-testsuite's OOM-repro tests (see
+# tetron-testsuite/DO-NOT-COMMIT/TODO_DETAILS.md#zgrep-multimember-undercount).
+log_match_count() {
+	local gzip_file="$1" pattern="$2"
+	[[ -f "$gzip_file" ]] || { echo 0; return; }
+	zcat "$gzip_file" 2>/dev/null | grep -c "$pattern" || echo 0
+}

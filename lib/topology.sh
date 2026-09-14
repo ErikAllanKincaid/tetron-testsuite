@@ -116,7 +116,11 @@ vm_run() {
 
 # vm_upload <physical-host> <run-id> <node-name> <local-path> <remote-path>
 # Uploads a local file (e.g. a built tetron binary) into one VM via
-# `vagrant upload`.
+# `vagrant upload`. For a remote physical host (an ssh: target in
+# hosts.conf), `vagrant upload` has no concept of uploading from the
+# controller directly -- the file is staged on the physical host first via
+# a plain scp, then `vagrant upload` runs from a path local to that host,
+# and the staged copy is removed afterward.
 vm_upload() {
 	local physical_host="$1"
 	local run_id="$2"
@@ -126,10 +130,17 @@ vm_upload() {
 	local remote_dir
 	remote_dir="$(topology_remote_dir "$run_id")"
 
-	if [[ "${TESTSUITE_HOSTS[$physical_host]}" != "local" ]]; then
-		fatal "vm_upload: uploading through a remote physical host is not yet implemented -- stage the file on '$physical_host' first and use vm_run with a local path there"
+	local target="${TESTSUITE_HOSTS[$physical_host]:-}"
+	[[ -n "$target" ]] || fatal "vm_upload: unknown host '$physical_host'"
+
+	if [[ "$target" == "local" ]]; then
+		run_on "$physical_host" "cd '$remote_dir' && vagrant upload '$local_path' '$remote_path' $node_name"
+	else
+		local staged_path
+		staged_path="$remote_dir/upload-staging-$(basename "$local_path")-$$"
+		scp -o BatchMode=yes "$local_path" "${target#ssh:}:$staged_path" >&2 || fatal "vm_upload: scp staging to '$physical_host' failed"
+		run_on "$physical_host" "cd '$remote_dir' && vagrant upload '$staged_path' '$remote_path' $node_name && rm -f '$staged_path'"
 	fi
-	run_on "$physical_host" "cd '$remote_dir' && vagrant upload '$local_path' '$remote_path' $node_name"
 }
 
 # vm_setup_peer_ssh <physical-host> <run-id> <node-name...>
