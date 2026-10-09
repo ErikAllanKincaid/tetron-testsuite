@@ -26,9 +26,12 @@
 # 1s floor. node2 is the flapping side; its own in-memory streak is lost on
 # every restart, which is fine -- node1 is the node under test.
 #
-# NOTE: timing-sensitive (depends on how fast a VM daemon boots, dials, and is
-# restarted). Not yet in run-list.txt -- validate live, tune the flap cadence
-# / window if needed, then enlist it.
+# The assertion is made deterministic (not timing-fragile) by raising node1's
+# reconnect-holddown.min-uptime to 30s -- far above the restart cadence -- so
+# every connection node1 holds during the flap dies well under the floor and is
+# unambiguously a flap, no matter how fast or slow the VM daemon boots/dials.
+# The only requirement is that node1 establishes and loses a handful of these
+# short-lived connections, which the restart loop guarantees.
 
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -80,9 +83,12 @@ main() {
 	# line is debug (steady-state retry, LOG-005 precedent). LOG-004 live-reloads
 	# this with no restart.
 	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo tetron config set log-level debug" || fatal "reconnect-storm: could not set log-level debug on node1"
-	# Lower the hold-down floor so a short VM-paced flap already trips it, and
-	# disable jitter so the escalated backoff values are exact and easy to assert.
-	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo tetron config set reconnect-holddown.min-uptime 5 && sudo tetron config set reconnect-holddown.jitter-pct 0" || fatal "reconnect-storm: could not set reconnect-holddown knobs on node1"
+	# Raise the hold-down floor to 30s (well above the restart cadence) so every
+	# connection node1 holds during the flap dies far under it and is
+	# unambiguously classified as a flap, regardless of VM dial-speed jitter --
+	# this is what makes the assertion deterministic rather than timing-fragile.
+	# Disable jitter so the escalated backoff values are exact and easy to assert.
+	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo tetron config set reconnect-holddown.min-uptime 30 && sudo tetron config set reconnect-holddown.jitter-pct 0" || fatal "reconnect-storm: could not set reconnect-holddown knobs on node1"
 
 	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node2 "sudo tetron join $invite --hostname node2" || fatal "reconnect-storm: 'tetron join' failed on node2"
 
@@ -101,9 +107,17 @@ main() {
 
 	# Flap node2: each restart tears down the connection node1 holds a few
 	# seconds after node2 re-establishes it, so node1 observes a run of
-	# short-lived (< min-uptime) connections to the same peer.
-	log_info "flapping node2 (15 daemon restarts, ~3s apart) to induce short-lived connections on node1"
-	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node2 "for i in \$(seq 1 15); do sudo systemctl restart tetron; sleep 3; done" || fatal "reconnect-storm: flap loop failed on node2"
+	# short-lived (< min-uptime) connections to the same peer. The loop runs
+	# HERE in the test shell (one single-command vm_run per restart), not as a
+	# compound remote command -- a remote `for ...; do ...; done` gets mangled
+	# by the vagrant-ssh quoting layers (vm_run wraps the whole command in
+	# nested double quotes).
+	local flaps=15 i
+	log_info "flapping node2 ($flaps daemon restarts, ~3s apart) to induce short-lived connections on node1"
+	for ((i = 1; i <= flaps; i++)); do
+		vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node2 "sudo systemctl restart tetron" || fatal "reconnect-storm: flap restart $i/$flaps failed on node2"
+		sleep 3
+	done
 
 	log_info "letting node1's reconnect state settle (20s)"
 	sleep 20
@@ -112,7 +126,10 @@ main() {
 	# the 1s floor every cycle (only ever `secs=1`); after it, the persisted flap
 	# streak escalates the backoff above 1s. Extract the max secs= node1 logged.
 	local secs_values max_secs
-	secs_values="$(vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo grep -ohE 'coordinator reconnecting in secs=[0-9]+' /var/log/tetron/tetron.log.* 2>/dev/null | grep -oE '[0-9]+\$' || true")"
+	# The log line is `coordinator reconnecting in peer=<id> secs=N` -- there is a
+	# peer= field between `in` and `secs=`, so match on `secs=` directly and pull
+	# the number out of that token.
+	secs_values="$(vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo grep -ohE 'coordinator reconnecting in .*secs=[0-9]+' /var/log/tetron/tetron.log.* 2>/dev/null | grep -oE 'secs=[0-9]+' | grep -oE '[0-9]+' || true")"
 	max_secs=0
 	local v
 	for v in $secs_values; do
