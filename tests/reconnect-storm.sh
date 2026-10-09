@@ -44,6 +44,12 @@ require_cmd jq ssh scp
 
 : "${TESTSUITE_TETRON_BINARY:=$ROOT/../tetron/target/release/tetron}"
 : "${TESTSUITE_PHYSICAL_HOST:=}"
+# Hold-down floor set on node1 during the test. The default (30s, far above the
+# flap cadence) makes the treatment arm deterministic. Set to 0 for a CONTROL
+# run: min-uptime 0 means no connection is ever classified as a flap, so the
+# persistent streak never accumulates -- this reproduces pre-fix behavior on the
+# same binary (only CONVERGE-011's within-task dial-failure backoff remains).
+: "${RECONNECT_STORM_MIN_UPTIME:=30}"
 
 RUN_ID="reconnect-storm-$$"
 BROUGHT_UP=0
@@ -88,7 +94,7 @@ main() {
 	# unambiguously classified as a flap, regardless of VM dial-speed jitter --
 	# this is what makes the assertion deterministic rather than timing-fragile.
 	# Disable jitter so the escalated backoff values are exact and easy to assert.
-	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo tetron config set reconnect-holddown.min-uptime 30 && sudo tetron config set reconnect-holddown.jitter-pct 0" || fatal "reconnect-storm: could not set reconnect-holddown knobs on node1"
+	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node1 "sudo tetron config set reconnect-holddown.min-uptime $RECONNECT_STORM_MIN_UPTIME && sudo tetron config set reconnect-holddown.jitter-pct 0" || fatal "reconnect-storm: could not set reconnect-holddown knobs on node1"
 
 	vm_run "$TESTSUITE_PHYSICAL_HOST" "$RUN_ID" node2 "sudo tetron join $invite --hostname node2" || fatal "reconnect-storm: 'tetron join' failed on node2"
 
